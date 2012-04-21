@@ -8,7 +8,7 @@ class Index(models.Model):
                           max_length=15)
     filename = models.CharField('Filename',
                             max_length=1000)
-    size = models.CharField('Size'
+    size = models.CharField('Size',
                             max_length=20)
 
     def __unicode__(self):
