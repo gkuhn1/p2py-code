@@ -12,10 +12,10 @@ class Command(BaseCommand):
     option_list = BaseCommand.option_list + (
             make_option('--connect',
                 default='localhost:6987',
-                help='Parametros para conexão: host:porta - Default: localhost:6987'),
+                help=u'Parametros para conexão: host:porta - Default: localhost:6987'),
             make_option('--listen',
                 default=6988,
-                help='Porta de escuta para transferencias de arquivos.'),
+                help=u'Porta de escuta para transferencias de arquivos.'),
             )
 
     def handle(self, *args, **options):

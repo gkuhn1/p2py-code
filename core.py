@@ -88,10 +88,6 @@ class ServerWorker(P2py, threading.Thread):
         self.conn.send(data)
         print 'data sent'
         self.conn.close()
-    def get_file(self):
-        pass
-    def retrieve_file(self):
-        pass
 
 class ClientWorker(P2py):
     COMMANDS = [
