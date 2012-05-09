@@ -1,9 +1,13 @@
 # encoding: utf-8
+import os
 import socket
 import json
 import threading
 import time
 from threading import Thread
+from files.models import Index, Client
+from datetime import datetime
+from datetime import timedelta
 
 class P2py(object):
 
@@ -52,7 +56,8 @@ class ServerWorker(P2py, threading.Thread):
     def __init__(self, conn, addr, *args, **kwargs):
         threading.Thread.__init__(self)
         self.conn = conn
-        self.addr = addr
+        self.addr = addr[0]
+        self.port = addr[1]
 
     def run(self):
         '''
@@ -69,24 +74,35 @@ class ServerWorker(P2py, threading.Thread):
         self.conn.close()
 
     def active(self, *args):
-        print 'ACTIVE', args
+        Client.objects.filter(ip=self.addr).update(dt_expiracao=datetime.now()+timedelta(minutes=3))
+        Client.objects.filter(dt_expiracao=datetime.now()-timedelta(minutes=5)).delete()
+
     def shutdown(self, *args):
-        print 'SHUTDOWN', args
-    def send_list(self, *args):
-        print 'SEND_LIST', args
-    def search(self, *args):
-        print 'SEARCH', args
-        dargs = [
-            {'FILE': 'teste5.txt', 'IP': '10.1.1.1', 'SIZE':'10mb'},
-            {'FILE': 'teste4.txt', 'IP': '10.1.1.1', 'SIZE':'10mb'},
-            {'FILE': 'teste3.txt', 'IP': '10.1.1.1', 'SIZE':'10mb'},
-            {'FILE': 'teste2.txt', 'IP': '10.1.1.1', 'SIZE':'10mb'},
-            {'FILE': 'teste1.txt', 'IP': '10.1.1.1', 'SIZE':'10mb'},
-        ]
+        Client.objects.filter(ip=self.addr).delete()
+
+    def send_list(self, args):
+        _args = args or []
+        c = Client()
+        c.ip = self.addr
+        c.save()
+
+        for arquivo in _args:
+            i = Index()
+            i.client = c
+            i.filename = arquivo['FILE']
+            i.size = arquivo['SIZE']
+            i.save()
+
+    def search(self, args):
+        dargs = list(Index.objects.filter(
+                    filename__icontains=args['WORD'],
+                    client__dt_expiracao__gte=datetime.now(),
+                ).exclude(client__ip=self.addr
+                ).values('filename', 'client__ip', 'size'))
+
         data = self.je({'COMMAND': 'SEND_SEARCH',
                         'ARGS': dargs})
         self.conn.send(data)
-        print 'data sent'
         self.conn.close()
 
 class ClientWorker(P2py):
@@ -123,6 +139,8 @@ class ClientWorker(P2py):
             self.do_send_list()
             self.menu()
             # self.do_search()
+        except:
+            pass
         finally:
             self.do_shutdown()
             self.th_listen._Thread__stop()
@@ -166,8 +184,8 @@ class ClientWorker(P2py):
             print 'Search results empty'
 
         for result in self.search_results:
-            print '%s | %s | %s' % (result['IP'], result['FILE'],
-                                    result['SIZE'])
+            print '%s | %s | %s' % (result['client__ip'], result['filename'],
+                                    result['size'])
 
     def start_listen(self):
         '''
@@ -193,6 +211,7 @@ class ClientWorker(P2py):
             self.log('sending file %s to %s' % (f, addr))
         else:
             self.log('COMMAND desconhecido: %s' % data)
+
     def do_send_file(self):
         '''
         Envia o comando para buscar arquivo
@@ -219,9 +238,24 @@ class ClientWorker(P2py):
         '''
         Envia a lista de arquivos do cliente
         '''
+        PASTA = './shared'
+        if not os.path.isdir(PASTA):
+            if not os.path.exists(PASTA):
+                # cria a pasta com nenhum arquivo.
+                os.mkdir(PASTA)
+
+        files = os.listdir(PASTA)
+        args = []
+        for f in files:
+            d = {
+                'SIZE': os.path.getsize(os.path.join(PASTA, f)),
+                'FILE': f,
+                }
+            args.append(d)
+
         s = self.connect()
         data = {'COMMAND': 'SEND_LIST',
-                'ARGS': [{'SIZE': '20mb', 'FILE': 'arq1'}]
+                'ARGS': args,
                }
         self.send(s, data)
         self.close(s)
