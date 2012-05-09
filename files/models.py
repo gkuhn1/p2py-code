@@ -7,6 +7,7 @@ class Client(models.Model):
 
     ip = models.CharField('IP',
                           max_length=15)
+    port = models.IntegerField('Porta')
 
     dt_expiracao = models.DateTimeField(
                     default=lambda: datetime.now()+timedelta(minutes=3))

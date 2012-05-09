@@ -4,6 +4,7 @@ import socket
 import json
 import threading
 import time
+import errno
 from threading import Thread
 from files.models import Index, Client
 from datetime import datetime
@@ -13,35 +14,45 @@ class P2py(object):
 
     def __init__(self, socket):
         self.socket = socket
+        self._log = 0
 
-    def receive(self, conn=None, block=True):
+    def receive(self, conn=None, block=True, timeout=5):
         conn = conn or self.conn
         conn.setblocking(block)
+        conn.settimeout(timeout)
         data = []
         cnt = 0
+        tam = 1024
         while cnt < 100:
             try:
                 cnt+=1
-                d = conn.recv(1024)
-                if not d:
-                    break
+                d = conn.recv(tam)
                 data.append(d)
+                if not d or len(d) < tam:
+                    break
             except:
                 break
         # print 'received %s' % ''.join(data)
         if data:
             return self.jd(''.join(data))
-        return ''
+        return {}
     def send(self, sock, data):
         sock.send(self.je(data))
     def close(self, sock):
-        sock.shutdown(socket.SHUT_RDWR)
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except socket.error, e:
+            if e.errno == 107:
+                # conexão foi fechada na outra ponta.
+                pass
+        sock.close()
     def je(self, data):
         return json.dumps(data)
     def jd(self, data):
         return json.loads(data)
     def log(self, msg):
-        print msg
+        if hasattr(self, '_log',) and self._log:
+            print msg
 
 class ServerWorker(P2py, threading.Thread):
     COMMANDS = [
@@ -63,7 +74,8 @@ class ServerWorker(P2py, threading.Thread):
         '''
         Trata a mensagem recebida
         '''
-        msg = self.receive(block=False)
+        msg = self.receive()
+        self.log(msg)
         command = msg['COMMAND'].lower()
         args = msg.get('ARGS', None)
         if hasattr(self, command):
@@ -81,12 +93,13 @@ class ServerWorker(P2py, threading.Thread):
         Client.objects.filter(ip=self.addr).delete()
 
     def send_list(self, args):
-        _args = args or []
+        _files = args['FILES'] or []
         c = Client()
         c.ip = self.addr
+        c.port = args['PORT']
         c.save()
 
-        for arquivo in _args:
+        for arquivo in _files:
             i = Index()
             i.client = c
             i.filename = arquivo['FILE']
@@ -98,7 +111,7 @@ class ServerWorker(P2py, threading.Thread):
                     filename__icontains=args['WORD'],
                     client__dt_expiracao__gte=datetime.now(),
                 ).exclude(client__ip=self.addr
-                ).values('filename', 'client__ip', 'size'))
+                ).values('filename', 'client__ip', 'client__port', 'size'))
 
         data = self.je({'COMMAND': 'SEND_SEARCH',
                         'ARGS': dargs})
@@ -121,10 +134,12 @@ class ClientWorker(P2py):
         s.connect(( host, port))
         return s
     def __init__(self, host, port, listen):
+        self._log = 1
         self.host = host
         self.port = port
         self.listen = listen
         self.search_results = []
+        self.pasta = './shared'
         self.max_listen = 5 # maximo de conexões
         self.act_listen = 0 # clientes conectados
         self.active_timeout = 60 # em segundos
@@ -139,8 +154,8 @@ class ClientWorker(P2py):
             self.do_send_list()
             self.menu()
             # self.do_search()
-        except:
-            pass
+        except Exception, e:
+            print e
         finally:
             self.do_shutdown()
             self.th_listen._Thread__stop()
@@ -157,9 +172,9 @@ class ClientWorker(P2py):
             if opcao == 1:
                 self.do_search()
             elif opcao == 2:
-                print 'Opção 2'
-            elif opcao == 5:
                 self.show_search_results()
+            elif opcao == 3:
+                self.do_send_file()
             elif opcao == -1:
                 # Validações antes de sair
                 print 'Sair'
@@ -169,8 +184,8 @@ class ClientWorker(P2py):
     def draw_menu(self):
         op = raw_input('''
             1. Buscar
-            2. OP 02.
-            5. Show result list.
+            2. Mostrar resultados da busca.
+            3. Baixar arquivo.
            -1. Sair
 
             Forneça uma opção: 
@@ -182,10 +197,15 @@ class ClientWorker(P2py):
     def show_search_results(self):
         if not self.search_results:
             print 'Search results empty'
+            return None
 
-        for result in self.search_results:
-            print '%s | %s | %s' % (result['client__ip'], result['filename'],
-                                    result['size'])
+        print 'IDX | IP | Filename | Filesize'
+
+        for idx in range(0,len(self.search_results)):
+            print '%2i  | %s | %s | %s' % (idx+1,
+                                self.search_results[idx]['client__ip'],
+                                self.search_results[idx]['filename'][0:25],
+                                self.search_results[idx]['size'])
 
     def start_listen(self):
         '''
@@ -208,18 +228,79 @@ class ClientWorker(P2py):
         data = self.receive(conn)
         if data['COMMAND'] == 'SEND_FILE':
             f = data['ARGS']['FILE']
-            self.log('sending file %s to %s' % (f, addr))
+            try:
+                _file = open(os.path.join(self.pasta,f), 'r')
+            except IOError, e:
+                self.log('ERRO: %s' % e)
+                data = {'STATUS': 'ERROR: %s' % e}
+                conn.send(self.je(data))
+            else:
+                _size = os.path.getsize(_file.name)
+                data = {'STATUS': 'OK',
+                        'SIZE': str(_size)
+                        }
+                conn.send(self.je(data))
+                ok = conn.recv(5)
+                if ok == 'SEND!':
+                    sent = 0L
+                    read = 50000
+                    while sent < _size:
+                        try:
+                            conn.send(_file.read(read))
+                            sent += read
+                        except socket.error, e:
+                            if e.errno == errno.EPIPE:
+                                self.log('Client desconectado')
+                                break
+                            else:
+                                raise
+                    self.log('sending file %s to %s' % (f, addr))
         else:
             self.log('COMMAND desconhecido: %s' % data)
+        self.close(conn)
 
     def do_send_file(self):
         '''
         Envia o comando para buscar arquivo
         '''
-        s = self.connect()
-        data = {'COMMAND': 'SEND_FILE', 'ARGS': {'FILE': '/tmp/teste.txt'}}
-        self.send(s, data)
-        self.close(s)
+        idx = int(raw_input('Informe o "idx" do arquivo: '))-1
+        if idx not in range(0, len(self.search_results)):
+            print 'IDX INVALIDO'
+        else:
+            _file = self.search_results[idx]
+            s = self.connect(host=_file['client__ip'],
+                             port=_file['client__port'])
+
+            data = {'COMMAND': 'SEND_FILE', 'ARGS': {
+                                        'FILE': _file['filename']}
+                    }
+            self.send(s, data)
+            # recebe o tamanho
+            s.settimeout(5)
+            data = self.receive(s)
+            if data['STATUS'] == 'OK':
+                tamanho = int(data.get('SIZE', 0))
+                self.log('Download total size: "%s"' % tamanho)
+                s.send('SEND!')
+                tam_recv = 1024
+                f = open(os.path.join(self.pasta, _file['filename']+'_rec'), 'w')
+                s.settimeout(1)
+                total_received = 0
+                while 1:
+                    d = s.recv(tam_recv)
+                    f.write(d)
+                    t_received = len(d)
+                    total_received += len(d)
+                    self.log('received %s of %s' % (total_received, tamanho))
+                    if t_received < tam_recv or t_received == tamanho:
+                        self.log( 'break in %s' % total_received)
+                        break
+
+                self.log('file saved as "%s"' % f.name)
+                f.close()
+            else:
+                print 'Arquivo não encontrado!'
+            self.close(s)
 
     def do_search(self):
         '''
@@ -231,14 +312,19 @@ class ClientWorker(P2py):
             data = {'COMMAND': 'SEARCH', 'ARGS': {'WORD': word}}
             self.send(s, data)
             results = self.receive(s)
-            self.search_results = results['ARGS']
+            self.log(results)
+            if 'ARGS' in results:
+                self.search_results = results['ARGS']
+
+            print '%s resultados para "%s"' % (len(self.search_results),
+                                                word)
             self.close(s)
 
     def do_send_list(self):
         '''
         Envia a lista de arquivos do cliente
         '''
-        PASTA = './shared'
+        PASTA = self.pasta
         if not os.path.isdir(PASTA):
             if not os.path.exists(PASTA):
                 # cria a pasta com nenhum arquivo.
@@ -255,7 +341,7 @@ class ClientWorker(P2py):
 
         s = self.connect()
         data = {'COMMAND': 'SEND_LIST',
-                'ARGS': args,
+                'ARGS': {'FILES': args, 'PORT': self.listen},
                }
         self.send(s, data)
         self.close(s)
