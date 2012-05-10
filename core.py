@@ -1,4 +1,21 @@
 # encoding: utf-8
+# P2Py - Um clone do napster em python
+#
+# Participantes do Grupo
+#   - Camila Rachel Tonin
+#   - Guilherme Kuhn
+#   - Pedro Afonso
+#
+# Desenvolvido para a disciplina de
+# Sistemas distribuidos e programação paralela.
+#
+# Professor: Ricardo Vargas Dorneles
+# Universidade de Caxias do Sul
+#
+# Data: 10/05/2012 ---
+#
+####################################################
+
 import os
 import socket
 import json
@@ -10,11 +27,19 @@ from files.models import Index, Client
 from datetime import datetime
 from datetime import timedelta
 
+COLORS = {
+    'red' : '\033[91m',
+    'green': '\033[92m',
+    'blue': '\033[94m',
+    'yellow': '\033[93m',
+    'end': '\033[0m',
+    }
+
 class P2py(object):
 
     def __init__(self, socket):
         self.socket = socket
-        self._log = 0
+        self._log = 1
 
     def receive(self, conn=None, block=True, timeout=5):
         conn = conn or self.conn
@@ -50,6 +75,8 @@ class P2py(object):
         return json.dumps(data)
     def jd(self, data):
         return json.loads(data)
+    def printc(self, msg, color='blue'):
+        print '%s%s%s' % (COLORS[color], msg, COLORS['end'])
     def log(self, msg):
         if hasattr(self, '_log',) and self._log:
             print msg
@@ -66,9 +93,11 @@ class ServerWorker(P2py, threading.Thread):
     ]
     def __init__(self, conn, addr, *args, **kwargs):
         threading.Thread.__init__(self)
+        self.log = 0
         self.conn = conn
         self.addr = addr[0]
         self.port = addr[1]
+        self.log('Connected from %s:%s' % (self.addr, self.port))
 
     def run(self):
         '''
@@ -86,8 +115,10 @@ class ServerWorker(P2py, threading.Thread):
         self.conn.close()
 
     def active(self, *args):
-        Client.objects.filter(ip=self.addr).update(dt_expiracao=datetime.now()+timedelta(minutes=3))
-        Client.objects.filter(dt_expiracao=datetime.now()-timedelta(minutes=5)).delete()
+        Client.objects.filter(ip=self.addr).update(
+                        dt_expiracao=datetime.now()+timedelta(minutes=3))
+        Client.objects.filter(
+               dt_expiracao=datetime.now()-timedelta(minutes=5)).delete()
 
     def shutdown(self, *args):
         Client.objects.filter(ip=self.addr).delete()
@@ -134,7 +165,7 @@ class ClientWorker(P2py):
         s.connect(( host, port))
         return s
     def __init__(self, host, port, listen):
-        self._log = 1
+        self._log = 0
         self.host = host
         self.port = port
         self.listen = listen
@@ -177,35 +208,42 @@ class ClientWorker(P2py):
                 self.do_send_file()
             elif opcao == -1:
                 # Validações antes de sair
-                print 'Sair'
+                self.printc('Saindo...')
+                self.printc('Tchau tchau...', 'green')
+                self.printc(';\'(', 'red')
             else:
-                print 'Opção inválida'
+                self.printc('Opção inválida')
 
     def draw_menu(self):
-        op = raw_input('''
+        self.printc('''
             1. Buscar
             2. Mostrar resultados da busca.
             3. Baixar arquivo.
            -1. Sair
 
             Forneça uma opção: 
-            ''')
+            ''', 'yellow')
+        op = raw_input()
         try: op = int(op)
         except: op = 0
         return op
 
     def show_search_results(self):
         if not self.search_results:
-            print 'Search results empty'
+            self.printc('Lista de resultados vazia.', 'red')
             return None
 
-        print 'IDX | IP | Filename | Filesize'
+        self.printc('IDX | IP | Filename | Filesize')
 
         for idx in range(0,len(self.search_results)):
-            print '%2i  | %s | %s | %s' % (idx+1,
+            if idx % 2:
+                color = 'blue'
+            else:
+                color = 'green'
+            self.printc('%2i  | %s | %s | %s' % (idx+1,
                                 self.search_results[idx]['client__ip'],
                                 self.search_results[idx]['filename'][0:25],
-                                self.search_results[idx]['size'])
+                                self.search_results[idx]['size']), color)
 
     def start_listen(self):
         '''
@@ -243,7 +281,7 @@ class ClientWorker(P2py):
                 ok = conn.recv(5)
                 if ok == 'SEND!':
                     sent = 0L
-                    read = 50000
+                    read = 2000
                     while sent < _size:
                         try:
                             conn.send(_file.read(read))
@@ -255,6 +293,7 @@ class ClientWorker(P2py):
                             else:
                                 raise
                     self.log('sending file %s to %s' % (f, addr))
+                    ok = conn.recv(2)
         else:
             self.log('COMMAND desconhecido: %s' % data)
         self.close(conn)
@@ -265,7 +304,7 @@ class ClientWorker(P2py):
         '''
         idx = int(raw_input('Informe o "idx" do arquivo: '))-1
         if idx not in range(0, len(self.search_results)):
-            print 'IDX INVALIDO'
+            self.printc('IDX INVALIDO', 'red')
         else:
             _file = self.search_results[idx]
             s = self.connect(host=_file['client__ip'],
@@ -280,33 +319,46 @@ class ClientWorker(P2py):
             data = self.receive(s)
             if data['STATUS'] == 'OK':
                 tamanho = int(data.get('SIZE', 0))
-                self.log('Download total size: "%s"' % tamanho)
+                self.printc('Tamanho total do download: "%s"' % tamanho)
                 s.send('SEND!')
                 tam_recv = 1024
-                f = open(os.path.join(self.pasta, _file['filename']+'_rec'), 'w')
+                f = open(os.path.join(self.pasta,
+                                      _file['filename']+'_rec'), 'w')
                 s.settimeout(1)
                 total_received = 0
+                i = tamanho/30
+                old_j = 0
+                import sys
                 while 1:
                     d = s.recv(tam_recv)
                     f.write(d)
                     t_received = len(d)
                     total_received += len(d)
-                    self.log('received %s of %s' % (total_received, tamanho))
-                    if t_received < tam_recv or t_received == tamanho:
+                    j = total_received/i
+                    if old_j != j:
+                        old_j = j
+                        sys.stdout.write(
+             '\r['+'\033[7m'+' '*j+'\033[7m'+'\033[0m'+' '*(30-j)+']')
+                        sys.stdout.flush()
+                    self.log('received %s of %s' % (total_received,
+                                                    tamanho))
+                    if total_received == tamanho:
                         self.log( 'break in %s' % total_received)
+                        print ''
                         break
 
-                self.log('file saved as "%s"' % f.name)
+                self.printc('Arquivo salvo como "%s"' % f.name, 'green')
                 f.close()
             else:
-                print 'Arquivo não encontrado!'
+               self.printc('Arquivo não encontrado!', 'red')
             self.close(s)
 
     def do_search(self):
         '''
         Envia o comando de pesquisa
         '''
-        word = raw_input('Palavra para consulta: ')
+        self.printc('Palavra para consulta: ')
+        word = raw_input()
         if word:
             s = self.connect()
             data = {'COMMAND': 'SEARCH', 'ARGS': {'WORD': word}}
@@ -316,8 +368,13 @@ class ClientWorker(P2py):
             if 'ARGS' in results:
                 self.search_results = results['ARGS']
 
-            print '%s resultados para "%s"' % (len(self.search_results),
-                                                word)
+            if len(self.search_results) > 0:
+                color = 'green'
+            else:
+                color = 'red'
+
+            self.printc('%s resultados para "%s"' % (
+                                len(self.search_results), word), color)
             self.close(s)
 
     def do_send_list(self):
