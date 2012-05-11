@@ -93,7 +93,7 @@ class ServerWorker(P2py, threading.Thread):
     ]
     def __init__(self, conn, addr, *args, **kwargs):
         threading.Thread.__init__(self)
-        self.log = 0
+        self._log = 0
         self.conn = conn
         self.addr = addr[0]
         self.port = addr[1]
